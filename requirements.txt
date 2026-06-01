@@ -1,0 +1,13 @@
+streamlit 
+numpy 
+scipy.optimize 
+scipy.interpolate 
+plotly.graph_objects 
+pandas 
+io
+re
+datetime
+yahooquery
+plotly.graph_objects
+datetime
+sklearn.covariance
