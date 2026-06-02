@@ -14,7 +14,7 @@ from yahooquery import Ticker
 from sklearn.covariance import LedoitWolf
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO DE PÁGINA UNIFICADA (OBRIGATÓRIO SER A PRIMEIRA INSTRUÇÃO)
+# ⚙️ CONFIGURAÇÃO DE PÁGINA UNIFICADA (DEVE SER A PRIMEIRA INSTRUÇÃO DO STREAMLIT)
 # ==============================================================================
 st.set_page_config(page_title="Grilli Analytics | Institutional Suite", layout="wide")
 
@@ -1169,7 +1169,7 @@ if app_choice == "Terminal Quantitativo v8.0: Institutional Asset Suite":
 
 elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
 
-    # CSS do Painel do Terminal de Opções (Adotando a mesma estrutura visual e paleta institucional de alta qualidade)
+    # CSS do Painel do Terminal de Opções (Visual premium unificado com o modulo de portfolios)
     st.markdown("""
         <style>
         [data-testid="stMetric"] {
@@ -1192,7 +1192,7 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
         """, unsafe_allow_html=True)
 
     st.title("Terminal de Risco e Gestão de Portfólio (v18.2)")
-    st.write("Vectorized Risk Core | Discrete-to-Continuous Rate BRL Adjuster | Cubic Spline Interpolated Vol Surface | Optimized Performance Node")
+    st.write("Vectorized Risk Core | Live Asset Pricing | B3 Calendar Parser | Taylor Expansion PnL Attribution | Joint VaR Generator")
     st.write("---")
 
     # INITIAL STATE SETUP & CACHING
@@ -1208,68 +1208,98 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
         st.session_state['raw_text_cache'] = ""
     if 'parsed_df' not in st.session_state:
         st.session_state['parsed_df'] = None
+    if 'risk_run' not in st.session_state:
+        st.session_state['risk_run'] = False
 
     # ==============================================================================
-    # 🎛️ CONTROLES DA SIDEBAR & MODELO CONTINUO (ALTAMENTE EXPLICATIVOS COM TOOLTIPS)
+    # 🎛️ CONTROLES DA SIDEBAR & MODELO CONTINUO
     # ==============================================================================
     st.sidebar.markdown("### 🗓️ Configurações Temporais")
     val_date = st.sidebar.date_input(
         "Data Base (Valuation Date):", 
         datetime.date(2026, 6, 1),
-        help="Data de referência sob a qual todas as maturidades contratuais e dias úteis B3 serão calculados."
+        help="Define a data sob a qual o tempo remanescente até o vencimento das opções será calculado no motor Black-Scholes."
     )
 
-    st.sidebar.markdown("### ⚙️ Parâmetros do Mercado DI (Discretos B3)")
+    st.sidebar.markdown("### 🔍 Ativo de Referência e Cotação Live")
+    underlying_ticker = st.sidebar.text_input(
+        "Ticker do Ativo Base (B3):", 
+        value="PETR4.SA", 
+        help="Digite o código com sufixo .SA (ex: VALE3.SA, PETR4.SA) para buscar o preço de fechamento real via Yahoo Finance."
+    )
+
+    @st.cache_data(ttl=600)
+    def fetch_live_spot(ticker_symbol):
+        try:
+            t = Ticker(ticker_symbol)
+            price_data = t.price
+            if ticker_symbol in price_data:
+                return float(price_data[ticker_symbol].get('regularMarketPrice', 35.00))
+            return float(list(price_data.values())[0].get('regularMarketPrice', 35.00))
+        except Exception:
+            return 35.00 # Fallback padrão
+
+    spot_fetched = fetch_live_spot(underlying_ticker)
+
+    S_global = st.sidebar.number_input(
+        "Spot de Referência ($S_0$):", 
+        value=spot_fetched, 
+        step=0.10,
+        help="Preço atual da ação base. Este valor retroalimentará os preços de todos os ativos spot e opções parametrizados no portfólio."
+    )
+
+    if st.sidebar.button("🔄 Centralizar Strikes da Carteira no Spot", help="Atualiza instantaneamente os strikes da tabela de operações para se ajustarem ao preço spot do ativo selecionado."):
+        df_port = st.session_state['portfolio'].copy()
+        df_port.loc[df_port['Tipo'] == 'spot', 'Strike'] = 0.0
+        df_port.loc[df_port['Tipo'] == 'call', 'Strike'] = np.round(S_global, 1)
+        df_port.loc[df_port['Tipo'] == 'put', 'Strike'] = np.round(S_global, 1)
+        st.session_state['portfolio'] = df_port
+        st.rerun()
+
+    st.sidebar.markdown("### ⚙️ Parâmetros de Curva DI (BRL Discreta)")
     r_curto = st.sidebar.number_input(
-        "Rate Curto (30 DU) %:", 
+        "Taxa de Juros Curta (30 DU) %:", 
         value=10.25, 
         step=0.05,
-        help="Taxa de juros DI discreta anualizada para o vencimento de curto prazo (30 dias úteis)."
+        help="Taxa DI discreta anualizada para o vencimento de 30 dias úteis."
     ) / 100
     r_medio = st.sidebar.number_input(
-        "Rate Médio (252 DU) %:", 
+        "Taxa de Juros Média (252 DU) %:", 
         value=11.10, 
         step=0.05,
-        help="Taxa de juros DI discreta anualizada para o vencimento de médio prazo (252 dias úteis)."
+        help="Taxa DI discreta anualizada para o vencimento de 252 dias úteis."
     ) / 100
     r_longo = st.sidebar.number_input(
-        "Rate Longo (1008 DU) %:", 
+        "Taxa de Juros Longa (1008 DU) %:", 
         value=11.75, 
         step=0.05,
-        help="Taxa de juros DI discreta anualizada para o vencimento de longo prazo (1008 dias úteis)."
+        help="Taxa DI discreta anualizada para o vencimento de 1008 dias úteis."
     ) / 100
 
-    # Conversão Contínua DI
     rates_dict = {
         30/252: np.log(1.0 + r_curto),
         252/252: np.log(1.0 + r_medio),
         1008/252: np.log(1.0 + r_longo)
     }
 
-    st.sidebar.markdown("### 📊 Variáveis Globais de Referência")
+    st.sidebar.markdown("### 📊 Variáveis Globais de Opções")
     opt_type_global = st.sidebar.radio(
-        "Ponta Global (Micro):", 
+        "Tipo Padrão de Opção:", 
         ["call", "put"], 
         format_func=lambda x: "Call" if x == "call" else "Put",
-        help="Opção padrão utilizada para os cálculos do laboratório isolado."
-    )
-    S_global = st.sidebar.number_input(
-        "Spot Atual (S):", 
-        value=35.00, 
-        step=0.10,
-        help="Preço à vista atual da ação ou ativo subjacente de referência no mercado."
+        help="Tipo de contrato adotado por padrão para precificação na aba de Laboratório."
     )
     sigma_global = st.sidebar.number_input(
-        "Volatilidade de Referência (σ %):", 
+        "Volatilidade Implícita (σ %):", 
         value=30.0, 
         step=0.5,
-        help="Volatilidade implícita padrão anualizada aplicável aos ativos do portfólio."
+        help="Volatilidade anualizada adotada no modelo Black-Scholes para avaliar teoricamente as opções do portfólio."
     ) / 100
     T_days_global = st.sidebar.number_input(
         "Dias Úteis Default:", 
         value=21, 
         step=1,
-        help="Dias úteis padrão aplicados caso o sistema não consiga identificar a data de vencimento do contrato pelo ticker."
+        help="Prazo padrão de dias úteis aplicado se o vencimento automático do ticker não puder ser deduzido."
     )
 
     st.sidebar.markdown("### 🎲 Parâmetros de Estresse D+1 (PnL Explain)")
@@ -1277,13 +1307,13 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
         "Choque de Spot D+1 (R$):", 
         value=0.00, 
         step=0.20,
-        help="Variação simulada no preço do spot (R$) para estimativa de sensibilidade e Taylor PnL Explain."
+        help="Deslocamento absoluto simulado no preço spot para atribuição do PnL de Taylor no cenário D+1."
     )
     shock_vol = st.sidebar.number_input(
         "Choque de Vol D+1 (pp):", 
         value=0.00, 
         step=0.5,
-        help="Choque em pontos percentuais sobre a volatilidade implícita do ativo para cálculo de impacto no portfólio."
+        help="Variação absoluta simulada (em pontos percentuais) na volatilidade implícita do ativo para cálculo do efeito Vega no PnL Explain."
     ) / 100
 
     S_d1_scenario = max(S_global + shock_S, 0.01)
@@ -1291,45 +1321,39 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
 
     st.sidebar.markdown("### 🛡️ Configurações Monte Carlo")
     sims = st.sidebar.slider(
-        "Simulações:", 
+        "Nº de Simulações:", 
         10000, 50000, 20000, 
         step=5000,
-        help="Quantidade de trajetórias estocásticas geradas para as simulações de risco de cauda (VaR)."
+        help="Quantidade de simulações estatísticas do Monte Carlo para calcular o risco de cauda (VaR)."
     )
     rho_shock = st.sidebar.slider(
         "Correlação Spot/Vol (ρ):", 
         -1.0, 1.0, -0.6, 
         step=0.05,
-        help="Correlação histórica entre retornos do ativo à vista e variações na volatilidade implícita (efeito alavancagem)."
+        help="Correlação assimétrica entre variações do spot e flutuações de volatilidade (efeito alavancagem)."
     )
     vol_of_vol = st.sidebar.slider(
-        "Magnitude do Choque Vol-of-Vol:", 
+        "Vol-of-Vol (σ_vol):", 
         0.1, 2.0, 0.6, 
         step=0.05,
-        help="Incerteza/volatilidade aplicada à própria curva de volatilidade implícita ao longo das projeções de cauda."
+        help="Magnitude do desvio estocástico da própria volatilidade implícita ao longo das trajetórias de Monte Carlo."
     )
     reduction_method = st.sidebar.selectbox(
-        "Método de Redução de Variância:", 
+        "Redução de Variância:", 
         ["None", "Antithetic Variates", "Moment Matching"],
-        help="Técnicas matemáticas empregadas para acelerar a convergência e reduzir o ruído amostral do Monte Carlo."
+        help="Método numérico aplicado para reduzir a variância amostral e acelerar a precisão estatística da simulação."
     )
 
-    @st.cache_data
-    def generate_monte_carlo_normals(sims, rho, method):
-        rng = np.random.default_rng(42)
-        Z1 = rng.standard_normal(sims)
-        Z2 = rho * Z1 + np.sqrt(1 - rho**2) * rng.standard_normal(sims)
-        
-        if method == "Antithetic Variates":
-            Z1 = np.concatenate([Z1, -Z1])
-            Z2 = np.concatenate([Z2, -Z2])
-        elif method == "Moment Matching":
-            Z1 = (Z1 - np.mean(Z1)) / (np.std(Z1) + 1e-9)
-            Z2 = (Z2 - np.mean(Z2)) / (np.std(Z2) + 1e-9)
-            
-        return Z1, Z2
+    st.sidebar.markdown("### 🚀 Execução do Painel")
+    submit_risk_analysis = st.sidebar.button(
+        "🚀 Executar Análise de Risco do Portfólio",
+        help="Processa todos os cálculos de gregas, cenários de estresse de PnL e simulações de Monte Carlo baseados na sua carteira configurada."
+    )
 
-    # Execução do Diagnóstico Quantitativo
+    if submit_risk_analysis:
+        st.session_state['risk_run'] = True
+
+    # Diagnósticos e Integridade
     diagnostic_suite = run_model_diagnostics()
     all_passed = all(diagnostic_suite.values())
 
@@ -1362,15 +1386,13 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
     # ==============================================================================
     with tab1:
         st.markdown("<div class='secao-titulo'>1. EXPOSIÇÃO GERAL & PORTFOLIO RISK CONTROL (VETORIZADO)</div>", unsafe_allow_html=True)
+        st.info("Insira ou edite as posições da sua carteira na tabela interativa abaixo. Os preços teóricos são computados de forma vetorizada via Black-Scholes-Merton.")
         
-        with st.form("portfolio_editor_form"):
-            raw_df = st.data_editor(st.session_state['portfolio'], num_rows="dynamic", use_container_width=True)
-            submit_button = st.form_submit_button("🚀 Recalcular Portfólio & Executar Simulações de Risco")
+        raw_df = st.data_editor(st.session_state['portfolio'], num_rows="dynamic", use_container_width=True)
+        st.session_state['portfolio'] = ValuationValidators.sanitize_portfolio_data(raw_df)
 
-        if submit_button or 'portfolio' in st.session_state:
-            edited_df = ValuationValidators.sanitize_portfolio_data(raw_df)
-            st.session_state['portfolio'] = edited_df
-
+        if st.session_state['risk_run']:
+            edited_df = st.session_state['portfolio']
             N_assets = len(edited_df)
             
             if N_assets > 0:
@@ -1417,7 +1439,6 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                 net_vega = np.sum(vegas_total * qty)
                 net_gex = np.sum(gex_total)
 
-                # --- T=1 (Precificação Vetorizada sob Choque) ---
                 t_years_new = np.maximum(t_dias - 1, 0) / 252
                 r_assets_new = YieldCurveEngine.interpolate_rate(t_years_new, rates_dict)
                 
@@ -1454,16 +1475,13 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                 pnl_residual = pnl_total_real - pnl_teorico_taylor
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
-                c1.metric("MTM Hoje (R$)", f"{mtm_hoje:,.2f}", help="Marcação a Mercado total consolidada do portfólio hoje.")
-                c2.metric("Net Delta", f"{net_delta:,.2f}", help="Delta equivalente total de primeira ordem do portfólio.")
-                c3.metric("Net Gamma", f"{net_gamma:,.2f}", help="Curvatura de segunda ordem de preço em relação ao portfólio.")
-                c4.metric("Net Theta/Dia", f"R$ {net_theta:,.2f}", help="Decaimento temporal teórico diário do valor do portfólio.")
-                c5.metric("Net Vega/1pp", f"R$ {net_vega:,.2f}", help="Sensibilidade do portfólio a mudanças de 1 ponto percentual na volatilidade.")
-                c6.metric("Gamma Exp (GEX)", f"R$ {net_gex:,.2f}", help="Exposição cambial e efeito de hedge gama em valor financeiro.")
+                c1.metric("MTM Hoje (R$)", f"{mtm_hoje:,.2f}", help="Marcação a Mercado total consolidada do portfólio.")
+                c2.metric("Net Delta", f"{net_delta:,.2f}", help="Delta equivalente de primeira ordem. Representa a exposição direcional liquida a variações de R$1.00 no Spot.")
+                c3.metric("Net Gamma", f"{net_gamma:,.2f}", help="Curvatura líquida de segunda ordem do portfólio.")
+                c4.metric("Net Theta/Dia", f"R$ {net_theta:,.2f}", help="Decaimento temporal teórico consolidado diário da carteira.")
+                c5.metric("Net Vega/1pp", f"R$ {net_vega:,.2f}", help="Sensibilidade consolidada a variações de 1% na volatilidade de mercado.")
+                c6.metric("Gamma Exp (GEX)", f"R$ {net_gex:,.2f}", help="Exposição Gamma líquida ponderada pelo quadrado do preço spot.")
 
-                # ==============================================================================
-                # DECOMPOSIÇÃO DE PNL EXPLAIN DE TAYLOR
-                # ==============================================================================
                 st.markdown("<div class='secao-titulo'>2. PnL EXPLAIN (TAYLOR MULTI-ORDER ATTRIBUTION)</div>", unsafe_allow_html=True)
                 st.latex(r"\Delta PnL \approx \Delta \cdot dS + \frac{1}{2}\Gamma \cdot dS^2 + \Theta \cdot dt + \nu \cdot d\sigma + \text{Vanna} \cdot dS d\sigma + \text{Charm} \cdot dS dt + \text{Residual}")
                 
@@ -1487,16 +1505,12 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                     if residual_pct > 0.25:
                         st.warning(f"🚨 **Alerta de Convergência:** O residual teórico representa {residual_pct:.1%} do resultado total. Aproximações de Taylor deterioram sob choques extremos.")
 
-                # ==============================================================================
-                # RISK TRIANGULATION (VETORIZADO E INTEGRADO À CURVA CONTÍNUA DI)
-                # ==============================================================================
                 with col_var_metrics:
                     st.write("**Métricas Robustas de VaR D+1 (95% Confiança)**")
                     with st.spinner("Calculando modelos matemáticos..."):
                         dt = 1/252
                         Z1, Z2 = generate_monte_carlo_normals(sims, rho_shock, reduction_method)
                         current_sims = len(Z1)
-                        
                         r_drift = YieldCurveEngine.interpolate_rate(dt, rates_dict)
                         
                         St1_mc = S_global * np.exp((r_drift - 0.5 * sigma_global**2) * dt + sigma_global * np.sqrt(dt) * Z1)
@@ -1519,28 +1533,17 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                         z_cf = z_alpha + (1/6)*(z_alpha**2 - 1)*skew + (1/24)*(z_alpha**3 - 3*z_alpha)*kurt - (1/36)*(2*z_alpha**3 - 5*z_alpha)*(skew**2)
                         cf_var_95 = np.mean(pnl_joint) + z_cf * np.std(pnl_joint)
                         
-                        st.metric("First-Order Delta-Normal VaR", f"R$ {dn_var_95:,.2f}", help="VaR linear parametrizado sob premissa de distribuição estritamente normal.")
-                        st.metric("Monte Carlo VaR (Spot Shock)", f"R$ {var_pure_95:,.2f}", help="VaR simulado estocasticamente considerando flutuações puras de preço de spot.")
-                        st.metric("Joint Spot-Vol Estresse VaR", f"R$ {var_joint_95:,.2f}", help="VaR integrado considerando variações concomitantes de spot e volatilidade (Joint Distribution).")
-                        st.metric("Cornish-Fisher VaR (Adjusted)", f"R$ {cf_var_95:,.2f}", help="VaR de cauda ajustado por assimetria (skewness) e excesso de curtose reais.")
-                        st.metric("Expected Shortfall (CVaR Joint)", f"R$ {cvar_joint_95:,.2f}", help="Perda esperada média nas piores 5% de trajetórias da simulação conjunta.")
+                        st.metric("First-Order Delta-Normal VaR", f"R$ {dn_var_95:,.2f}", help="VaR linear baseado estritamente na carteira Delta-Equivalente.")
+                        st.metric("Monte Carlo VaR (Spot Shock)", f"R$ {var_pure_95:,.2f}", help="VaR simulado desconsiderando estresses da estrutura de volatilidade implícita.")
+                        st.metric("Joint Spot-Vol Estresse VaR", f"R$ {var_joint_95:,.2f}", help="VaR conjunto simulado simulando concomitantemente choques de Spot e de Volatilidade implícita.")
+                        st.metric("Cornish-Fisher VaR (Adjusted)", f"R$ {cf_var_95:,.2f}", help="VaR corrigido não-paramétrico que ajusta a cauda normal com base na assimetria e curtose reais.")
+                        st.metric("Expected Shortfall (CVaR Joint)", f"R$ {cvar_joint_95:,.2f}", help="Média das perdas no pior espectro de 5% de probabilidade da simulação de Monte Carlo.")
 
-                # ==============================================================================
-                # HISTOGRAMA INTERATIVO PLOTLY & ANÁLISE DE CENÁRIOS DETERMINÍSTICOS
-                # ==============================================================================
                 st.markdown("<div class='secao-titulo'>3. DISTRIBUIÇÃO CONJUNTA & CENÁRIOS MACROESTRUTURAIS</div>", unsafe_allow_html=True)
-                
                 col_chart, col_stress = st.columns([1.5, 1])
                 
                 with col_chart:
                     fig_dist = go.Figure()
-                    fig_dist.add_trace(go.Scatter(
-                        x=pnl_joint,
-                        y=np.ones_like(pnl_joint),
-                        mode='markers',
-                        visible=False,
-                        name="Faux"
-                    ))
                     fig_dist.add_trace(go.Histogram(x=pnl_joint, nbinsx=150, name="Simulação Conjunta", opacity=0.6, marker_color="#1e3a8a"))
                     fig_dist.add_vline(x=var_joint_95, line_width=2.5, line_dash="dash", line_color="#ef4444", annotation_text=f"VaR (95%): R$ {var_joint_95:,.0f}", annotation_position="top left")
                     fig_dist.add_vline(x=cvar_joint_95, line_width=2.5, line_dash="dash", line_color="#b91c1c", annotation_text=f"CVaR: R$ {cvar_joint_95:,.0f}", annotation_position="bottom left")
@@ -1580,16 +1583,52 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                     )
             else:
                 st.info("Adicione ativos na mesa de operações para calcular as métricas de risco.")
+        else:
+            st.info("💡 Para simular os riscos de cauda do portfólio, estimar as gregas globais e visualizar a waterfall de PnL Explain, configure os parâmetros de mercado na barra lateral e clique no botão **🚀 Executar Análise de Risco do Portfólio**.")
 
     # ==============================================================================
     # --- TAB 2: ALPHA SCANNER DE ARBITRAGEM (ESTRUTURAL E SINTÉTICA) ---
     # ==============================================================================
     with tab2:
         st.markdown("<div class='secao-titulo'>4. SCANNER DE ARBITRAGEM E RELATIVE VOLATILITY Z-SCORE</div>", unsafe_allow_html=True)
-        st.info("Insira dados de fechamento ou mercado intradia no formato CSV ou tabulação padrão de mercado (Strikes, Prêmios, Tickers). O scanner verificará violações estruturais.")
+        st.info("Para testar desvios de volatilidade e arbitragens financeiras, você pode colar dados de mercado externos ou gerar uma grade sintética idealizada ao redor do Spot atual.")
         
-        raw_paste = st.text_area("Insira Dados (Smart Paste - Ctrl+V):", height=150, placeholder="Ticker\tStrike\tLast\nPETRF350\t35.00\t2.10\nPETRR350\t35.00\t1.45")
+        c_scan1, c_scan2 = st.columns(2)
+        with c_scan1:
+            raw_paste = st.text_area("Smart Paste (Ctrl+V) de Tabelas Externas:", height=130, placeholder="Ticker\tStrike\tLast\nPETRF350\t35.00\t2.10\nPETRR350\t35.00\t1.45")
         
+        with c_scan2:
+            st.write("**Gerador de Grade de Opções Ativa**")
+            st.write("Gera de forma simulada uma listagem completa de strikes (Calls e Puts) correspondentes ao Spot de referência, adicionando desvios realistas para detecção quantitativa de arbitragens.")
+            generate_mock = st.button("⚡ Gerar Grade de Opções Teórica (baseada no Spot)")
+
+        if generate_mock:
+            # Gerador de strikes ao redor do Spot selecionado
+            spot_base = float(S_global)
+            strikes = np.round(np.arange(np.round(spot_base * 0.85), np.round(spot_base * 1.15) + 1, 1.0), 1)
+            rows = []
+            for letter_idx, is_call_type in [('F', True), ('R', False)]:
+                for k in strikes:
+                    tk = f"{underlying_ticker[:4].upper()}{letter_idx}{int(k*10)}"
+                    r_asset = YieldCurveEngine.interpolate_rate(21/252, rates_dict)
+                    base_price = CoreModels.engine_bsm(spot_base, k, 21/252, r_asset, sigma_global, "call" if is_call_type else "put")
+                    # Adiciona desvios sutis (spread/ruído) para o algoritmo de arbitragem detectar
+                    market_price = max(base_price + np.random.normal(0, 0.08), 0.01)
+                    rows.append({
+                        "Ticker": tk,
+                        "Strike": k,
+                        "Last": np.round(market_price, 2),
+                        "Tipo_P": "call" if is_call_type else "put",
+                        "Dias Úteis": 21,
+                        "T_Anos": 21/252
+                    })
+            df_parsed = pd.DataFrame(rows)
+            st.session_state["raw_text_cache"] = "MOCK_GRID"
+            st.session_state["parsed_df"] = df_parsed
+            st.session_state["col_k"] = "Strike"
+            st.session_state["col_p"] = "Last"
+            st.rerun()
+
         if raw_paste and raw_paste != st.session_state["raw_text_cache"]:
             try:
                 df_parsed = pd.read_csv(io.StringIO(raw_paste), sep='\t')
@@ -1637,8 +1676,9 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                     st.session_state["parsed_df"] = df_parsed.dropna(subset=[col_k, col_p]).reset_index(drop=True)
                     st.session_state["col_k"] = col_k
                     st.session_state["col_p"] = col_p
+                    st.rerun()
             except Exception as e:
-                st.error(f"Erro Crítico no processador de importação: {e}")
+                st.error(f"Erro no leitor de importação: {e}")
 
         if st.session_state["parsed_df"] is not None:
             col_k = st.session_state["col_k"]
@@ -1797,10 +1837,10 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
     # ==============================================================================
     with tab4:
         st.markdown("<div class='secao-titulo'>6. LABORATÓRIO MATEMÁTICO & EXPLAINER CALCULATOR</div>", unsafe_allow_html=True)
-        st.info("Laboratório isolado para auditoria analítica e refinamento quantitativo.")
+        st.info("Laboratório isolado para auditoria analítica e de sensibilidade de gregas.")
         
-        K_lab = st.number_input("Strike do Ativo (K):", value=36.00, step=0.50, help="Preço de exercício pactuado do contrato exótico simulado.")
-        T_lab_days = st.number_input("Dias Úteis do Ativo (T):", value=21, step=1, help="Prazo em dias úteis até o vencimento do contrato analisado.")
+        K_lab = st.number_input("Strike do Ativo (K):", value=36.00, step=0.50, help="Preço de exercício estipulado no contrato de opção.")
+        T_lab_days = st.number_input("Dias Úteis do Ativo (T):", value=21, step=1, help="Tempo residual do contrato estipulado em dias úteis.")
         T_lab = T_lab_days / 252
         
         r_lab = YieldCurveEngine.interpolate_rate(T_lab, rates_dict)
@@ -1808,23 +1848,22 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
         p_lab = CoreModels.engine_bsm(S_global, K_lab, T_lab, r_lab, sigma_global, opt_type_global)
         g_lab = CoreModels.calc_greeks_bsm(S_global, K_lab, T_lab, r_lab, sigma_global, opt_type_global)
         
-        # Comparativo: Theta Analítico vs Diferenças Finitas em tempo discreto (dt)
         dt = 1/252
         p_dt_minus = CoreModels.engine_bsm(S_global, K_lab, max(T_lab - dt, 1e-9), r_lab, sigma_global, opt_type_global)
         discrete_theta = (p_dt_minus - p_lab) 
         
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric(f"Prêmio Teórico BSM", f"R$ {p_lab:.4f}", help="Preço justo teórico do ativo derivativo resultante do modelo Black-Scholes-Merton.")
-        c2.metric("Delta do Ativo", f"{g_lab['delta']:.4f}", help="Sensibilidade do preço do derivativo a variações de primeira ordem no preço do Spot.")
-        c3.metric("Gamma Analítico", f"{g_lab['gamma']:.4f}", help="Sensibilidade do Delta a variações de primeira ordem no preço do Spot (curvatura).")
-        c4.metric("Vega Analítico (1%)", f"R$ {g_lab['vega']:.4f}", help="Sensibilidade absoluta a variações de 1 ponto percentual na volatilidade implícita.")
+        c1.metric(f"Prêmio Teórico BSM", f"R$ {p_lab:.4f}", help="Prêmio de equilíbrio teórico derivado pelo modelo BSM.")
+        c2.metric("Delta do Ativo", f"{g_lab['delta']:.4f}", help="Hedge ratio: alteração teórica no prêmio em relação ao deslocamento de R$1.00 no Spot.")
+        c3.metric("Gamma Analítico", f"{g_lab['gamma']:.4f}", help="Medida de curvatura: variação do delta equivalente por unidade de variação no Spot.")
+        c4.metric("Vega Analítico (1%)", f"R$ {g_lab['vega']:.4f}", help="Exposição absoluta à volatilidade: variação no prêmio a cada 1% de alteração de volatilidade implícita.")
         
         st.write("### 📐 Sensibilidades de Ordem Superior (Mesa Exótica)")
         c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Vanna", f"{g_lab['vanna']:.4f}", help="Medida de sensibilidade cruzada de segunda ordem: alteração do Delta em função da volatilidade.")
-        c6.metric("Vomma", f"{g_lab['vomma']:.4f}", help="Gama de volatilidade: variação da sensibilidade do Vega em relação à volatilidade implícita.")
-        c7.metric("Charm (Daily decay)", f"{g_lab['charm']:.6f}", help="Decaimento diário do Delta equivalente devido estritamente à passagem do tempo (Theta do Delta).")
-        c8.metric("Speed", f"{g_lab['speed']:.6f}", help="Sensibilidade de terceira ordem: variação da curvatura do Gamma em relação à oscilação do Spot.")
+        c5.metric("Vanna", f"{g_lab['vanna']:.4f}", help="Sensibilidade mista de segunda ordem: alteração do Delta frente à variação de volatilidade.")
+        c6.metric("Vomma", f"{g_lab['vomma']:.4f}", help="Gama de volatilidade: variação da sensibilidade do Vega frente à volatilidade.")
+        c7.metric("Charm (Daily decay)", f"{g_lab['charm']:.6f}", help="Decaimento temporal diário do Delta equivalente (Theta do Delta).")
+        c8.metric("Speed", f"{g_lab['speed']:.6f}", help="Sensibilidade de terceira ordem: variação da curvatura do Gamma por oscilação no Spot.")
         
         st.write("---")
         st.write("### 🔬 Auditoria Metodológica e Equações (Explain Calculation)")
