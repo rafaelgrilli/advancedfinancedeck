@@ -320,6 +320,22 @@ def run_model_diagnostics():
     return results
 
 
+@st.cache_data
+def generate_monte_carlo_normals(sims, rho, method):
+    rng = np.random.default_rng(42)
+    Z1 = rng.standard_normal(sims)
+    Z2 = rho * Z1 + np.sqrt(1 - rho**2) * rng.standard_normal(sims)
+    
+    if method == "Antithetic Variates":
+        Z1 = np.concatenate([Z1, -Z1])
+        Z2 = np.concatenate([Z2, -Z2])
+    elif method == "Moment Matching":
+        Z1 = (Z1 - np.mean(Z1)) / (np.std(Z1) + 1e-9)
+        Z2 = (Z2 - np.mean(Z2)) / (np.std(Z2) + 1e-9)
+        
+    return Z1, Z2
+
+
 # ==============================================================================
 # 📦 FUNÇÕES - APP 2 (TERMINAL QUANTITATIVO)
 # ==============================================================================
@@ -1439,6 +1455,7 @@ elif app_choice == "Terminal de Risco e Gestão de Portfólio (v18.2)":
                 net_vega = np.sum(vegas_total * qty)
                 net_gex = np.sum(gex_total)
 
+                # --- T=1 (Precificação Vetorizada sob Choque) ---
                 t_years_new = np.maximum(t_dias - 1, 0) / 252
                 r_assets_new = YieldCurveEngine.interpolate_rate(t_years_new, rates_dict)
                 
